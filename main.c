@@ -1,102 +1,91 @@
 #include <mpi.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
 #include <math.h>
 
-// function to evaluate the curve (y = f(x))
-float fn(float x) {
-    return x * x ; // example: y = x^2
-}
+void pipelined_sieve(int limit, int rank, int Tprocesses) {
+    int candidate;
+    int end_marker = -1; 
+    double start_time = MPI_Wtime();
 
-// this function is to compute the area of a trapezoid
-float trapezoid_area(float a, float b, float d) { 
-    float area = 0;
-    for (float x = a; x < b; x+=d) {
-        area += fn(x) + fn(x+d);
-    }
-    
-    return area * d / 2.0f;
-}
-
-int main(int argc, char** argv) {
-    int rank, size;
-    float a = 0.0f, b = 1.0f;  
-    int nb;
-    float start, end, local_area, total_area;
-
-    //assume the number of intervals is given
-    nb = 10000000;
-    
-    double sequential_start, sequential_end,sequential_time;
-    double sequential_area = 0;
-    float d = (b - a) / nb; // delta 
-
-    //Parallel Implementation
-    MPI_Init(&argc, &argv); // Initialize MPI
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get rank of the process
-    MPI_Comm_size(MPI_COMM_WORLD, &size); // Get number of processes
-    double parallel_start, parallel_end, parallel_time;
-
+    int *primes = malloc((limit / 2) * sizeof(int)); //space for primes
+    int Pcounter = 0;
 
     if (rank == 0) {
-        // Get number of intervals from the user
-        //print the number of intervals
-        //fflush(stdout);
-        //scanf("%d", &n);
-        //printf("Process 0 received n = %d\n", n); 
+        for (candidate = 2; candidate <= limit; candidate++) {
+            MPI_Send(&candidate, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);
+        }
+        MPI_Send(&end_marker, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);
+    } else {
+        while (1) {
+            MPI_Recv(&candidate, 1, MPI_INT, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (candidate == end_marker) {
+                if (rank < Tprocesses - 1) {
+                    MPI_Send(&end_marker, 1, MPI_INT, rank + 1, 0, MPI_COMM_WORLD);
+                }
+                break;
+            }
 
-        //Sequential implemenetation 
-    
-        printf("The number of intervals is: %d \n", nb);
+            bool isPrime = true;
+            for (int i = 0; i < Pcounter; i++) {
+                if (candidate % primes[i] == 0) {
+                    isPrime = false;
+                    break;
+                }
+                if (primes[i] * primes[i] > candidate) {
+                    break;
+                }
+            }
 
-        sequential_start = MPI_Wtime();
-
-        sequential_area = trapezoid_area(a, b, d);
-        
-        sequential_end = MPI_Wtime();
-
-        sequential_time = sequential_end - sequential_start;
-
-        printf("\n");
-        printf("..Sequential Results.. \n");
-        printf("The total area under the curve is: %f\n", sequential_area);
-        printf("The time took to complete the operation is: %f  \n", sequential_time);
-
+            // Store the prime number and send to the next process
+            if (isPrime) {
+                printf("Process %d identified prime: %d\n", rank, candidate);
+                primes[Pcounter++] = candidate;
+                if (rank < Tprocesses - 1) {
+                    MPI_Send(&candidate, 1, MPI_INT, rank + 1, 0, MPI_COMM_WORLD);
+                }
+            }
+        }
     }
-   
 
-    parallel_start = MPI_Wtime();
-    // Broadcast the number of intervals to all the processes
-    MPI_Bcast(&nb, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    
-    // Calculate interval size for each process
-    float region = (b - a)/ size;
-    
-    // Calculate local bounds for each process
-    start = a + rank * region;
-    end = start + region;
-    
-    // Each process calculates the area of its subinterval
-    local_area = trapezoid_area(start, end, d);
-    
-    // Reduce all local areas to the total area on root process
-    MPI_Reduce(&local_area, &total_area, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
+    // Process for collecting the primes (final process in the sequence)
+    if (rank == Tprocesses - 1) {
+        while (1) {
+            MPI_Recv(&candidate, 1, MPI_INT, Tprocesses - 2, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (candidate == end_marker) break;
+            
+            // can print the primes 
+        }
+       
+    }
 
-    parallel_end = MPI_Wtime();
+    // Release allocated memory
+    free(primes);
 
-    parallel_time = parallel_end - parallel_start;
-    
+    // End of timing
+    double end_time = MPI_Wtime();
+
     if (rank == 0) {
-        printf("\n");
-        printf("..Parallel Results.. \n");
-        printf("The total area under the curve is: %f\n", total_area);
-        printf("The time took to complete the operation is: %f\n", parallel_time);
-        printf("\n");
-
-        float speedUp =  sequential_time/parallel_time;
-        printf("The speedup factor is %f \n",speedUp);
-        printf("The efficiency is %f",(float)(speedUp/size)*100);
+        printf("Total execution time: %.6f seconds\n", end_time - start_time);
     }
-    
-    MPI_Finalize(); // Finalize MPI
+}
+
+int main(int argc, char *argv[]) {
+    MPI_Init(&argc, &argv);
+    int rank, Tprocesses;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &Tprocesses);
+
+    if (argc != 2) {
+        if (rank == 0) printf("Usage: %s <limit>\n", argv[0]);
+        MPI_Finalize();
+        return 1;
+    }
+    int limit = atoi(argv[1]);
+
+    pipelined_sieve(limit, rank, Tprocesses);
+
+    MPI_Finalize();
     return 0;
 }
